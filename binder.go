@@ -12,33 +12,7 @@ import (
 
 type ParamExtractor func(req *http.Request, name string) string
 
-type Validator func(in interface{}) error
-
-type Option func(*bindOptions)
-
-type bindOptions struct {
-	paramExtractor ParamExtractor
-	validator      Validator
-	bodyDecoders   []BodyDecoder
-}
-
-func WithParamExtractor(paramExtractor ParamExtractor) Option {
-	return func(options *bindOptions) {
-		options.paramExtractor = paramExtractor
-	}
-}
-
-func WithValidator(validator Validator) Option {
-	return func(options *bindOptions) {
-		options.validator = validator
-	}
-}
-
-func WithBodyDecoder(decoder BodyDecoder) Option {
-	return func(options *bindOptions) {
-		options.bodyDecoders = append(options.bodyDecoders, decoder)
-	}
-}
+type BindFunc func(req *http.Request, outPtr interface{}) error
 
 var textUnmarshalerType = reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 
@@ -154,7 +128,7 @@ func bind(outValue reflect.Value, values []string) error {
 	}
 }
 
-func bindQuery(req *http.Request, outPtr interface{}) error {
+func BindQuery(req *http.Request, outPtr interface{}) error {
 	outPtrValue := reflect.ValueOf(outPtr)
 	if outPtrValue.Kind() != reflect.Ptr {
 		return errors.New("out is not a pointer")
@@ -179,7 +153,7 @@ func bindQuery(req *http.Request, outPtr interface{}) error {
 	return nil
 }
 
-func bindHeader(req *http.Request, outPtr interface{}) error {
+func BindHeader(req *http.Request, outPtr interface{}) error {
 	outPtrValue := reflect.ValueOf(outPtr)
 	if outPtrValue.Kind() != reflect.Ptr {
 		return errors.New("out is not a pointer")
@@ -203,81 +177,46 @@ func bindHeader(req *http.Request, outPtr interface{}) error {
 	return nil
 }
 
-func bindParam(req *http.Request, paramExtractor ParamExtractor, outPtr interface{}) error {
-	outPtrValue := reflect.ValueOf(outPtr)
-	if outPtrValue.Kind() != reflect.Ptr {
-		return errors.New("out is not a pointer")
-	}
-	outValue := outPtrValue.Elem()
-	outType := outValue.Type()
-	for i := 0; i < outType.NumField(); i++ {
-		field := outType.Field(i)
-		paramTag := field.Tag.Get("param")
-		if paramTag == "" {
-			continue
+func BindParam(paramExtractor ParamExtractor) BindFunc {
+	return func(req *http.Request, outPtr interface{}) error {
+		outPtrValue := reflect.ValueOf(outPtr)
+		if outPtrValue.Kind() != reflect.Ptr {
+			return errors.New("out is not a pointer")
 		}
-
-		paramValue := paramExtractor(req, paramTag)
-		outFieldValue := outValue.Field(i)
-
-		if err := bind(outFieldValue, []string{paramValue}); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-type Binder struct {
-	options *bindOptions
-}
-
-func NewBinder(options ...Option) *Binder {
-	bindOptions := &bindOptions{}
-	for _, option := range options {
-		option(bindOptions)
-	}
-
-	return &Binder{
-		options: bindOptions,
-	}
-}
-
-func (binder *Binder) BindRequest(req *http.Request, out interface{}) error {
-	if req.Method != http.MethodGet {
-		defer req.Body.Close()
-
-		for _, decoder := range binder.options.bodyDecoders {
-			if !decoder.Match(req) {
+		outValue := outPtrValue.Elem()
+		outType := outValue.Type()
+		for i := 0; i < outType.NumField(); i++ {
+			field := outType.Field(i)
+			paramTag := field.Tag.Get("param")
+			if paramTag == "" {
 				continue
 			}
 
-			if err := decoder.DecodeBody(req.Body, out); err != nil {
+			paramValue := paramExtractor(req, paramTag)
+			outFieldValue := outValue.Field(i)
+
+			if err := bind(outFieldValue, []string{paramValue}); err != nil {
 				return err
 			}
-			break
 		}
-	}
 
-	if err := bindQuery(req, out); err != nil {
-		return err
+		return nil
 	}
-
-	if err := bindHeader(req, out); err != nil {
-		return err
-	}
-
-	if binder.options.paramExtractor != nil {
-		if err := bindParam(req, binder.options.paramExtractor, out); err != nil {
-			return err
-		}
-	}
-
-	if binder.options.validator != nil {
-		if err := binder.options.validator(out); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
+
+func Compose(fns ...BindFunc) BindFunc {
+	return func(req *http.Request, outPtr interface{}) error {
+		for _, fn := range fns {
+			if err := fn(req, outPtr); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+}
+
+var DefaultBinding = Compose(
+	BindHeader,
+	BindQuery,
+	BindJSONBody,
+)

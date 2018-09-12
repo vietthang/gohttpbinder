@@ -29,7 +29,7 @@ func TestBindRequestBasic(t *testing.T) {
 	assert.Nil(err)
 
 	i := &input{}
-	err = NewBinder().BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Nil(err)
 
 	bar := "bar"
@@ -58,7 +58,7 @@ func TestBindHeader(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	i := &input{}
-	err = NewBinder().BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Nil(err)
 
 	assert.Equal(i, &input{
@@ -78,14 +78,17 @@ func TestBindRequestWithParamExtractor(t *testing.T) {
 	assert.Nil(err)
 
 	i := &input{}
-	binder := NewBinder(WithParamExtractor(func(req *http.Request, name string) string {
-		if name == "person_id" {
-			return "1"
-		}
-		return ""
-	}))
+	binding := Compose(
+		DefaultBinding,
+		BindParam(func(req *http.Request, name string) string {
+			if name == "person_id" {
+				return "1"
+			}
+			return ""
+		}),
+	)
 
-	err = binder.BindRequest(req, i)
+	err = binding(req, i)
 	assert.Nil(err)
 
 	assert.Equal(i, &input{
@@ -122,7 +125,7 @@ func TestBindRequestWithTextUnmarshaller(t *testing.T) {
 	assert.Nil(err)
 
 	i := &input{}
-	err = NewBinder().BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Nil(err)
 
 	var recipientID HexInt64 = 0xbb
@@ -147,39 +150,43 @@ func TestBindRequestWithTextUnmarshallerError(t *testing.T) {
 	assert.Nil(err)
 
 	i := &input{}
-	err = NewBinder().BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Error(err)
 }
 
 func TestBindRequestWithSlice(t *testing.T) {
-	assert := require.New(t)
-
 	type input struct {
 		HexInt64Slice    []HexInt64  `query:"int_slice"`
 		HexInt64PtrSlice []*HexInt64 `query:"int_ptr_slice"`
 		StringSlice      []string    `query:"string_slice"`
 	}
 
-	{
+	t.Parallel()
+
+	t.Run("with int_slice", func(t *testing.T) {
+		assert := require.New(t)
+
 		req, err := http.NewRequest(http.MethodGet, "http://example.com?int_slice=aa&int_slice=bb", nil)
 		assert.Nil(err)
 
 		i := &input{}
-		err = NewBinder().BindRequest(req, i)
+		err = DefaultBinding(req, i)
 
 		assert.Equal(i, &input{
 			HexInt64Slice:    []HexInt64{0xaa, 0xbb},
 			HexInt64PtrSlice: make([]*HexInt64, 0),
 			StringSlice:      make([]string, 0),
 		})
-	}
+	})
 
-	{
+	t.Run("with int_ptr_slice", func(t *testing.T) {
+		assert := require.New(t)
+
 		req, err := http.NewRequest(http.MethodGet, "http://example.com?int_ptr_slice=aa&int_ptr_slice=bb", nil)
 		assert.Nil(err)
 
 		i := &input{}
-		err = NewBinder().BindRequest(req, i)
+		err = DefaultBinding(req, i)
 
 		var aa HexInt64 = 0xaa
 		var bb HexInt64 = 0xbb
@@ -189,21 +196,23 @@ func TestBindRequestWithSlice(t *testing.T) {
 			HexInt64PtrSlice: []*HexInt64{&aa, &bb},
 			StringSlice:      make([]string, 0),
 		})
-	}
+	})
 
-	{
+	t.Run("with string_slice", func(t *testing.T) {
+		assert := require.New(t)
+
 		req, err := http.NewRequest(http.MethodGet, "http://example.com?string_slice=aa&string_slice=bb", nil)
 		assert.Nil(err)
 
 		i := &input{}
-		err = NewBinder().BindRequest(req, i)
+		err = DefaultBinding(req, i)
 
 		assert.Equal(i, &input{
 			HexInt64Slice:    make([]HexInt64, 0),
 			HexInt64PtrSlice: make([]*HexInt64, 0),
 			StringSlice:      []string{"aa", "bb"},
 		})
-	}
+	})
 }
 
 func TestBindRequestWithInvalidKind(t *testing.T) {
@@ -217,7 +226,7 @@ func TestBindRequestWithInvalidKind(t *testing.T) {
 	assert.Nil(err)
 
 	i := &input{}
-	err = NewBinder().BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Error(err)
 }
 
@@ -241,7 +250,7 @@ func TestBindRequestWithJSONBody(t *testing.T) {
 	}
 
 	i := &input{}
-	err = NewBinder(WithBodyDecoder(JSONBodyDecoder{})).BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Nil(err)
 
 	assert.Equal(i, &input{
@@ -269,40 +278,46 @@ func TestBindRequestWithInvalidJSONBody(t *testing.T) {
 	}
 
 	i := &input{}
-	err = NewBinder(WithBodyDecoder(JSONBodyDecoder{})).BindRequest(req, i)
+	err = DefaultBinding(req, i)
 	assert.Error(err)
 }
 
-
 func TestBindRequestWithValidator(t *testing.T) {
-	assert := require.New(t)
-
 	type input struct {
 		Q string `query:"q"`
 	}
 
-	binder := NewBinder(WithValidator(func(in interface{}) error {
-		if in.(*input).Q == "a" {
-			return nil
-		}
-		return errors.New("validation error")
-	}))
+	binding := Compose(
+		DefaultBinding,
+		func(_ *http.Request, outPtr interface{}) error {
+			if outPtr.(*input).Q == "a" {
+				return nil
+			}
+			return errors.New("validation error")
+		},
+	)
 
-	{
+	t.Parallel()
+
+	t.Run("With valid input", func(t *testing.T) {
+		assert := require.New(t)
+
 		req, err := http.NewRequest(http.MethodGet, "http://example.com?q=a", nil)
 		assert.Nil(err)
 
 		i := &input{}
-		err = binder.BindRequest(req, i)
+		err = binding(req, i)
 		assert.Nil(err)
-	}
+	})
 
-	{
+	t.Run("With invalid input", func(t *testing.T) {
+		assert := require.New(t)
+
 		req, err := http.NewRequest(http.MethodGet, "http://example.com?q=b", nil)
 		assert.Nil(err)
 
 		i := &input{}
-		err = binder.BindRequest(req, i)
+		err = binding(req, i)
 		assert.Error(err, "validation error")
-	}
+	})
 }
