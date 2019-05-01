@@ -1,13 +1,14 @@
 package httpbinder
 
 import (
-	"net/http"
-	"reflect"
-	"errors"
-	"strconv"
 	"encoding"
 	"encoding/base64"
+	"errors"
+	"net/http"
 	"net/textproto"
+	"net/url"
+	"reflect"
+	"strconv"
 )
 
 type ParamExtractor func(req *http.Request, name string) string
@@ -128,7 +129,7 @@ func bind(outValue reflect.Value, values []string) error {
 	}
 }
 
-func BindQuery(req *http.Request, outPtr interface{}) error {
+func bindValues(values url.Values, tag string, outPtr interface{}) error {
 	outPtrValue := reflect.ValueOf(outPtr)
 	if outPtrValue.Kind() != reflect.Ptr {
 		return errors.New("out is not a pointer")
@@ -137,20 +138,23 @@ func BindQuery(req *http.Request, outPtr interface{}) error {
 	outType := outValue.Type()
 	for i := 0; i < outType.NumField(); i++ {
 		field := outType.Field(i)
-		queryTag := field.Tag.Get("query")
+		queryTag := field.Tag.Get(tag)
 		if queryTag == "" {
 			continue
 		}
 
-		urlQuery := req.URL.Query()
 		outFieldValue := outValue.Field(i)
 
-		if err := bind(outFieldValue, urlQuery[queryTag]); err != nil {
+		if err := bind(outFieldValue, values[queryTag]); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func BindQuery(req *http.Request, outPtr interface{}) error {
+	return bindValues(req.URL.Query(), "query", outPtr)
 }
 
 func BindHeader(req *http.Request, outPtr interface{}) error {
@@ -218,5 +222,7 @@ func Compose(fns ...BindFunc) BindFunc {
 var DefaultBinding = Compose(
 	BindHeader,
 	BindQuery,
+	BindFormBody,
+	BindMultipartFormBody(32 << 20),
 	BindJSONBody,
 )

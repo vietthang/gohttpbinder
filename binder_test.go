@@ -1,14 +1,16 @@
 package httpbinder
 
 import (
-	"testing"
-	"github.com/stretchr/testify/require"
-	"net/http"
-	"strconv"
-	"encoding/json"
 	"bytes"
+	"encoding/json"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/require"
+	"mime/multipart"
+	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
+	"testing"
 )
 
 func TestBindRequestBasic(t *testing.T) {
@@ -319,5 +321,64 @@ func TestBindRequestWithValidator(t *testing.T) {
 		i := &input{}
 		err = binding(req, i)
 		assert.Error(err, "validation error")
+	})
+}
+
+func TestBindRequestWithFormBody(t *testing.T) {
+	assert := require.New(t)
+
+	form := url.Values{}
+	form.Add("formField", "bar")
+	req, err := http.NewRequest(http.MethodPost, "http://example.com?q=a", strings.NewReader(form.Encode()))
+	assert.Nil(err)
+
+	req.Header.Set("content-type", "application/x-www-form-urlencoded; charset=utf-8")
+
+	type input struct {
+		Q         string `query:"q"`
+		FormField string `form:"formField"`
+		JSONField string `json:"jsonField"`
+	}
+
+	i := &input{}
+	err = DefaultBinding(req, i)
+	assert.Nil(err)
+
+	assert.Equal(i, &input{
+		Q:         "a",
+		FormField: "bar",
+		JSONField: "",
+	})
+}
+
+func TestBindRequestWithMultipartFormBody(t *testing.T) {
+	assert := require.New(t)
+
+	buffer := bytes.NewBuffer(nil)
+	writer := multipart.NewWriter(buffer)
+	err := writer.WriteField("formField", "bar")
+	assert.Nil(err)
+	err = writer.Close()
+	assert.Nil(err)
+
+	req, err := http.NewRequest(http.MethodPost, "http://example.com?q=a", buffer)
+	assert.Nil(err)
+
+	req.Header.Set("content-type", writer.FormDataContentType())
+
+	type input struct {
+		Q         string `query:"q"`
+		FormField string `form:"formField"`
+		JSONField string `json:"jsonField"`
+	}
+
+	i := &input{}
+	err = DefaultBinding(req, i)
+	assert.Nil(err)
+
+	assert.Equal(i, &input{
+		Q:         "a",
+		FormField: "bar",
+		JSONField: "",
 	})
 }
